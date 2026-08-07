@@ -5,6 +5,11 @@ on:
     - cron: "0 3 1,16 * *" # 每個月 1 號與 16 號，約每 15 天跑一次
   workflow_dispatch: {}
 
+# repo 預設的 GITHUB_TOKEN 只有讀取權限，沒有這段的話 push 回 gh-pages/master
+# 會被拒絕（403 Permission denied to github-actions[bot]）。
+permissions:
+  contents: write
+
 jobs:
   scrape-and-publish:
     runs-on: ubuntu-latest
