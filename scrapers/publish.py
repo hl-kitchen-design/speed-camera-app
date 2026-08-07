@@ -18,15 +18,31 @@ from schema import EnforcementPoint
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gh-pages-build")
 
 
+def _dedupe_by_id(points: list[EnforcementPoint]) -> list[EnforcementPoint]:
+    # 2026-08-07 實跑真實管線發現：高雄市/新北市網頁的原始 HTML 裡同一份表格重複出現
+    # 兩次（響應式版面常見的手機版/桌機版都寫進同一份 HTML、只靠 CSS 隱藏其中一份，
+    # BeautifulSoup 不理會 CSS），導致每筆資料被抓兩次，且兩次的 id 完全相同
+    # （make_id 是內容決定的雜湊）。這裡依 id 去重，只保留第一次出現的那筆。
+    seen: set[str] = set()
+    deduped: list[EnforcementPoint] = []
+    for point in points:
+        if point.id in seen:
+            continue
+        seen.add(point.id)
+        deduped.append(point)
+    return deduped
+
+
 def build_output(all_points: list[EnforcementPoint]) -> dict:
+    deduped_points = _dedupe_by_id(all_points)
     version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return {
-        "points": [p.to_dict() for p in all_points],
+        "points": [p.to_dict() for p in deduped_points],
         "parking": [],
         "sections": [],
         "version": {
             "data_version": version,
-            "point_count": len(all_points),
+            "point_count": len(deduped_points),
             "parking_count": 0,
             "section_count": 0,
         },

@@ -45,3 +45,15 @@ def test_build_output_version_counts():
     assert output["version"]["parking_count"] == 0
     assert output["version"]["section_count"] == 0
     assert "data_version" in output["version"]
+
+
+def test_build_output_dedupes_points_with_same_id():
+    # 2026-08-07 實跑真實管線發現：高雄市/新北市網頁的原始 HTML 裡同一份表格
+    # 重複出現兩次（很可能是響應式版面把「手機版/桌機版」表格都寫進同一份 HTML，
+    # 只靠 CSS 隱藏其中一份，但 BeautifulSoup 不理會 CSS），導致每筆資料被抓兩次，
+    # 兩次結果的 id 完全相同（make_id 是內容決定的雜湊）。build_output 要在合併時
+    # 依 id 去重，只保留第一筆，不能整批原封不動塞進輸出。
+    output = build_output([_point("a"), _point("a"), _point("b")])
+    assert len(output["points"]) == 2
+    assert output["version"]["point_count"] == 2
+    assert {p["id"] for p in output["points"]} == {"a", "b"}
