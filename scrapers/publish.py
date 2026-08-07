@@ -49,6 +49,23 @@ def build_output(all_points: list[EnforcementPoint]) -> dict:
     }
 
 
+def _fetch_all(modules) -> list[EnforcementPoint]:
+    # 排程自動化要預期「某個政府網站當下連不上」是常態（例如國外雲端機房連台灣
+    # 地方政府網站可能被防火牆擋掉 connect timeout），單一來源失敗不該讓其他
+    # 原本能成功的來源也全部作廢、什麼都不發布。這裡先求「壞掉不拖垮全部」，
+    # 不做重試/backoff。
+    all_points: list[EnforcementPoint] = []
+    for module in modules:
+        try:
+            points = module.fetch()
+        except Exception as e:
+            print(f"{module.__name__}: 抓取失敗，略過此來源。錯誤：{e}")
+            continue
+        print(f"{module.__name__}: {len(points)} 筆")
+        all_points.extend(points)
+    return all_points
+
+
 def main() -> None:
     import hsinchu
     import kaohsiung
@@ -58,11 +75,9 @@ def main() -> None:
     import tainan
     import taipei
 
-    all_points: list[EnforcementPoint] = []
-    for module in (national_speed, taichung, taipei, tainan, hsinchu, kaohsiung, new_taipei):
-        points = module.fetch()
-        print(f"{module.__name__}: {len(points)} 筆")
-        all_points.extend(points)
+    all_points = _fetch_all(
+        (national_speed, taichung, taipei, tainan, hsinchu, kaohsiung, new_taipei)
+    )
 
     output = build_output(all_points)
 
