@@ -1,13 +1,15 @@
 import { Marker } from 'react-native-maps';
 import { View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { EnforcementPoint } from '../../data/seed/mockPoints';
-import { VIOLATION_COLORS, VIOLATION_ICONS } from './violationStyles';
+import { RemoteEnforcementPoint } from '../../services/dataFetcher';
+import { VIOLATION_COLORS, VIOLATION_ICONS, ViolationType } from './violationStyles';
 
-export function EnforcementMarker({ point }: { point: EnforcementPoint }) {
-  const primaryType = point.types[0];
-  const color = VIOLATION_COLORS[primaryType];
-  const iconName = VIOLATION_ICONS[primaryType];
+export function EnforcementMarker({ point }: { point: RemoteEnforcementPoint }) {
+  if (point.lat === null || point.lng === null) return null;
+
+  const primaryType = (point.violation_types[0] ?? 'speed') as ViolationType;
+  const color = VIOLATION_COLORS[primaryType] ?? VIOLATION_COLORS.speed;
+  const iconName = VIOLATION_ICONS[primaryType] ?? VIOLATION_ICONS.speed;
 
   return (
     <Marker coordinate={{ latitude: point.lat, longitude: point.lng }} anchor={{ x: 0.5, y: 0.5 }}>
