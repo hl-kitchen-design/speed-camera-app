@@ -1185,7 +1185,14 @@ SPEED_ROWS = [
         "經度": "120.934122",
         "緯度": "24.842299",
         "備註": "固定式",
-    }
+    },
+    {
+        "地點": "新竹市北區竹光路竹光國中（往北）",
+        "速限": "50",
+        "經度": "120.954317",
+        "緯度": "24.808516",
+        "備註": "移動式",
+    },
 ]
 
 
@@ -1200,18 +1207,25 @@ def test_build_points_from_tech_enforcement_table():
 
 
 def test_build_points_from_fixed_speed_table_defaults_to_speed_type():
-    points = build_points(SPEED_ROWS, type_field=None, source_name="新竹市警察局科學儀器(固定式)取締地點")
+    points = build_points([SPEED_ROWS[0]], type_field=None, source_name="新竹市警察局科學儀器(固定式)取締地點")
     assert points[0].violation_types == ["speed"]
 
 
-def test_fetch_merges_three_tables():
+def test_fetch_splits_speed_rows_by_remark_column():
     with patch("hsinchu.fetch_html_table_rows") as mock_fetch:
-        mock_fetch.side_effect = [TECH_ENFORCEMENT_ROWS, SPEED_ROWS, SPEED_ROWS]
+        mock_fetch.side_effect = [TECH_ENFORCEMENT_ROWS, SPEED_ROWS]
         from hsinchu import fetch
 
         result = fetch()
-    assert len(result) == 3
-    assert mock_fetch.call_count == 3
+    # 固定式/移動式兩個表格表頭完全一樣，fetch_html_table_rows 沒辦法從表頭區分，
+    # 所以測速表只會被呼叫「一次」（拿回固定式+移動式合併的列），不是分開呼叫兩次，
+    # 靠每一列本來就有的「備註」欄位值（"固定式"/"移動式"）在 hsinchu.py 裡自己切開。
+    assert mock_fetch.call_count == 2
+    assert len(result) == 3  # 1 科技執法 + 1 固定式 + 1 移動式
+    fixed = [p for p in result if p.source_name == "新竹市警察局科學儀器(固定式)取締地點"]
+    mobile = [p for p in result if p.source_name == "新竹市警察局科學儀器(移動式)取締地點"]
+    assert len(fixed) == 1
+    assert len(mobile) == 1
 ```
 
 - [ ] **Step 2: 執行測試確認失敗**
@@ -1275,8 +1289,14 @@ def build_points(
 
 def fetch() -> list[EnforcementPoint]:
     tech_rows = fetch_html_table_rows(SOURCE_URL, expected_header=_TECH_HEADER, verify_ssl=False)
-    fixed_speed_rows = fetch_html_table_rows(SOURCE_URL, expected_header=_SPEED_HEADER, verify_ssl=False)
-    mobile_speed_rows = fetch_html_table_rows(SOURCE_URL, expected_header=_SPEED_HEADER, verify_ssl=False)
+    # 「固定式」跟「移動式」測速兩個表格的表頭完全一樣（都是 _SPEED_HEADER），
+    # fetch_html_table_rows 是靠比對表頭字串找表格，沒辦法區分兩個表頭相同的表格，
+    # 呼叫兩次只會兩次都拿到「固定式+移動式合併」的同一份結果——不能這樣寫，
+    # 那樣每個點都會被算兩次、而且來源標籤還會分錯。正確做法：只呼叫一次拿到全部
+    # 測速列，再用每一列本來就有的「備註」欄位（值是"固定式"或"移動式"）分開。
+    speed_rows = fetch_html_table_rows(SOURCE_URL, expected_header=_SPEED_HEADER, verify_ssl=False)
+    fixed_speed_rows = [r for r in speed_rows if r.get("備註") == "固定式"]
+    mobile_speed_rows = [r for r in speed_rows if r.get("備註") == "移動式"]
 
     points = build_points(tech_rows, type_field="違規取締項目", source_name="新竹市警察局科技執法取締地點")
     points += build_points(fixed_speed_rows, type_field=None, source_name="新竹市警察局科學儀器(固定式)取締地點")
