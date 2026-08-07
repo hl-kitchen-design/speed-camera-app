@@ -1,6 +1,6 @@
 # 精準定位科技執法提醒 App — 設計文件
 
-日期：2026-08-05
+日期：2026-08-05（2026-08-07 補充第 6.1 節資料來源分層研究，其餘章節未變）
 狀態：待使用者審閱
 
 ## 1. 專案目標
@@ -24,7 +24,7 @@ App 使用 React Native + Expo 開發，目標平台為 iOS + Android。
 - 不做背景常駐定位（僅前景定位），降低 App Store 審查風險與電力消耗
 - 不做即時雷達/測速偵測，僅基於官方公告的已知點位/路段
 - 不宣稱能精確得知「這個確切車位可以臨停幾分鐘」——沒有全國紅黃線圖資，違停提醒是基於「已知科技執法偵測點＋官方公告依據連結」的提醒，非精確法律判斷
-- 第一階段爬蟲不涵蓋全部 22 縣市，僅涵蓋資料結構化程度較高的台北市、新北市、台中市、台南市
+- 第一階段爬蟲不涵蓋全部 22 縣市，詳細資料來源分層見第 6.1 節（2026-08-07 補充研究後更新）
 
 ## 3. 技術棧
 
@@ -119,10 +119,24 @@ App 使用 React Native + Expo 開發，目標平台為 iOS + Android。
 
 ## 6. 遠端資料更新（OTA）架構
 
+### 6.1 資料來源分層（2026-08-07 補充研究）
+
+| 層級 | 來源 | 涵蓋類型 | 技術處理 |
+|---|---|---|---|
+| 全國基礎層 | 警政署「測速執法設置點」（data.gov.tw dataset 7320） | 測速（全台 1893 筆，含金馬離島） | CSV 直接下載解析，經緯度現成可用 |
+| 第一波 | 台中市開放資料平台 | 測速/闖紅燈/不停讓行人/違停等（有獨立類型欄位） | CSV/API，經緯度現成 |
+| 第一波 | 台北市開放資料（data.gov.tw dataset 135957） | 取締項目（多類型） | 座標是 TWD97 TM2（EPSG:3826）X-Y，需用 `pyproj` 轉成經緯度 |
+| 第一波 | 台南市開放資料 | 類型寫在地址文字裡，無獨立欄位 | 無座標欄位，需用 OpenStreetMap Nominatim 地理編碼（離線批次跑，遵守 1 req/秒速率限制） |
+| 第一波 | 新北市／高雄市／新竹市（各自警局網頁 HTML 表格） | 各自不同，含測速/闖紅燈/違停等 | 無正式開放資料集，寫「通用 HTML 表格擷取器＋各縣市欄位對照設定」，比逐一寫死解析器好維護 |
+| 第二波（backlog） | 桃園市、嘉義市 | 各自不同 | 只查到 PDF 表格公告，PDF 擷取比 HTML 更脆弱，之後再排 |
+| 未研究（backlog） | 基隆、苗栗、彰化、南投、雲林、屏東、宜蘭、花蓮、台東、澎湖、金門、連江等縣市 | 未知 | 尚未逐一查證是否有開放資料或網頁表格 |
+
+第一波比原規劃多了新竹市、高雄市——查證後這兩個縣市有現成 HTML 表格（不是 PDF），可用同一套通用表格擷取器處理，成本低。桃園市查到的是 PDF，維持列為第二波。
+
+### 6.2 發布與排程
+
 1. **靜態資料服務**：GitHub Pages 靜態站，發布三份 JSON（points.json / parking.json / sections.json）＋ version.json
-2. **排程爬蟲**：GitHub Actions cron，每 15 天執行一次
-   - 第一階段涵蓋：台北市、新北市、台中市、台南市（各自獨立解析腳本，因為每個縣市網站格式不同：PDF、HTML 表格、Open Data 平台 API 皆有）
-   - 桃園市、高雄市列為第二波擴充
+2. **排程爬蟲**：GitHub Actions cron，每 15 天執行一次（全國基礎層與第一波各縣市一起排程）
    - 爬取結果直接自動發布（更新 GitHub Pages 上的 JSON），但每次執行都是一個獨立 git commit，保留完整版本歷史，若解析錯誤可快速回溯到前一版本
 3. **App 端**：
    - 啟動時背景比對本地 `data_version` 與遠端 `version.json`，有新版才下載並無感替換 AsyncStorage 快取
@@ -182,10 +196,15 @@ speed-camera-app/
   data/
     seed/                   # 內建預載假資料（開發用）
   scrapers/                 # GitHub Actions 用的 Python 爬蟲腳本（獨立於 App）
-    taipei.py
-    new_taipei.py
+    national_speed.py       # 警政署全國測速執法設置點，CSV 直接解析
+    taipei.py                # 含 pyproj 座標轉換（TWD97 TM2 -> WGS84）
+    new_taipei.py            # 用 html_table_parser.py + configs/new_taipei.json
     taichung.py
-    tainan.py
+    tainan.py                 # 含 Nominatim 地理編碼
+    hsinchu.py                # 用 html_table_parser.py + configs/hsinchu.json
+    kaohsiung.py               # 用 html_table_parser.py + configs/kaohsiung.json
+    html_table_parser.py     # 通用 HTML 表格擷取器，給 HTML 類縣市共用
+    configs/                  # 各縣市 HTML 表格欄位對照設定
     publish.py             # 合併輸出 JSON + version.json
   .github/workflows/
     scrape-data.yml         # 每 15 天排程
@@ -198,7 +217,7 @@ speed-camera-app/
 1. **專案骨架**：Expo 專案初始化、權限設定、遊戲風格地圖主畫面（含車輛 Marker、4 個圖示控制鍵），先用假資料
 2. **資料層＋OTA**：三種資料的本地載入、AsyncStorage 版本比對、GitHub Pages 靜態資料串接
 3. **警報邏輯**：三種警報引擎（固定點/違停計時/區間測速）＋遊戲化 Alert UI
-4. **爬蟲管線**：GitHub Actions cron＋四縣市解析腳本＋版本歷史紀錄
+4. **爬蟲管線**：GitHub Actions cron＋全國基礎層＋六縣市解析腳本＋版本歷史紀錄（詳見第 6.1 節資料來源分層）
 5. **視覺打磨與合規**：配色系統套用、動畫細節、震動/音效、Info.plist 權限說明文案、免責聲明
 
 每個階段完成後在 Expo Go 上實測，確認沒問題再進下一階段。
@@ -215,6 +234,7 @@ speed-camera-app/
 - 違規停車偵測點資料僅涵蓋已找到官方公告的縣市與地點，非全國完整涵蓋，且會隨時間逐步擴充
 - 區間測速的路段內判斷採座標緩衝區比對，非道路網路圖資比對，在複雜路網（交流道、匝道）可能有誤差
 - 各縣市網站格式不同，爬蟲腳本需個別維護，網站改版可能導致單一縣市資料中斷更新（需監控 GitHub Actions 執行結果）
+- 目前僅驗證台北、新北、台中、台南、新竹、高雄 6 縣市＋全國測速基礎層有可用資料源；桃園、嘉義查到的只有 PDF，其餘約 12 個縣市尚未查證，這些地區在第一波完成後仍只有全國測速資料，沒有其他違規類型
 
 ## 12. 測試方式
 
