@@ -19,8 +19,15 @@ interface DataState {
 }
 
 async function readCache(): Promise<CachedPayload | null> {
-  const raw = await AsyncStorage.getItem(CACHE_KEY);
-  return raw ? (JSON.parse(raw) as CachedPayload) : null;
+  // 讀取或解析失敗（AsyncStorage 原生模組錯誤、或存了損毀/舊格式的字串）時
+  // 視同「沒有快取」，不能整個拋出去——loadFromCacheOrFetch 呼叫這裡時沒有包
+  // try/catch，一旦拋出例外會讓 isLoading 卡在 true 永遠出不來。
+  try {
+    const raw = await AsyncStorage.getItem(CACHE_KEY);
+    return raw ? (JSON.parse(raw) as CachedPayload) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function writeCache(payload: CachedPayload): Promise<void> {
