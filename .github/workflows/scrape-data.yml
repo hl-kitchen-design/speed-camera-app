@@ -1,0 +1,71 @@
+name: Scrape enforcement data
+
+on:
+  schedule:
+    - cron: "0 3 1,16 * *" # 每個月 1 號與 16 號，約每 15 天跑一次
+  workflow_dispatch: {}
+
+jobs:
+  scrape-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master (scraper source)
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: master
+
+      - name: Checkout gh-pages (data output)
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r master/scrapers/requirements.txt
+
+      - name: Run scrapers
+        run: |
+          cd master/scrapers
+          python publish.py
+
+      - name: Copy geocode cache back (persist across runs)
+        run: cp master/scrapers/geocode_cache.json master/scrapers/geocode_cache.json.bak || true
+
+      - name: Sync output into gh-pages checkout
+        run: |
+          cp master/gh-pages-build/points.json gh-pages/points.json
+          cp master/gh-pages-build/parking.json gh-pages/parking.json
+          cp master/gh-pages-build/sections.json gh-pages/sections.json
+          cp master/gh-pages-build/version.json gh-pages/version.json
+
+      - name: Commit and push gh-pages
+        working-directory: gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add points.json parking.json sections.json version.json
+          if git diff --cached --quiet; then
+            echo "沒有資料變化，不需要 commit"
+          else
+            git commit -m "chore: 自動更新科技執法資料 $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Commit updated geocode cache back to master
+        working-directory: master
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add scrapers/geocode_cache.json
+          if git diff --cached --quiet; then
+            echo "geocode 快取沒有變化"
+          else
+            git commit -m "chore: 更新地理編碼快取"
+            git push
+          fi
