@@ -3,7 +3,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from publish import _fetch_all, build_output
+import pytest
+
+from publish import _abort_if_empty, _fetch_all, build_output
 from schema import EnforcementPoint
 
 
@@ -90,3 +92,19 @@ def test_fetch_all_all_sources_broken_returns_empty_list():
     points = _fetch_all([broken_a, broken_b])
 
     assert points == []
+
+
+def test_abort_if_empty_exits_with_nonzero_status_when_no_points():
+    # 2026-08-07 Task 12 review 發現：_fetch_all 的容錯機制拿掉了一個原本意外存在的
+    # 安全網——以前「全部來源都失敗」會讓整個程式直接 crash，GitHub Actions 因此
+    # 不會走到後面 commit/push 的步驟，不會把 gh-pages 上原本好好的資料蓋成空的。
+    # 現在改成 try/except 吃掉例外之後，若沒有這個明確的檢查，全部來源失敗時
+    # build_output([]) 會產出「看起來合法」但是空的 JSON，還是會被正常發布出去，
+    # 蓋掉舊資料。這裡補一個明確的中止檢查，不能只靠 _fetch_all 本身。
+    with pytest.raises(SystemExit) as exc_info:
+        _abort_if_empty([])
+    assert exc_info.value.code != 0
+
+
+def test_abort_if_empty_does_nothing_when_points_exist():
+    _abort_if_empty([_point("a")])  # 不應該拋出任何例外

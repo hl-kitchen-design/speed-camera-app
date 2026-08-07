@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 from schema import EnforcementPoint
@@ -66,6 +67,16 @@ def _fetch_all(modules) -> list[EnforcementPoint]:
     return all_points
 
 
+def _abort_if_empty(all_points: list[EnforcementPoint]) -> None:
+    # _fetch_all 讓「單一來源失敗」不會拖垮整個執行，但這也意外拿掉了一個原本
+    # 存在的安全網：以前「全部來源都失敗」會直接 crash，GitHub Actions 因此不會
+    # 走到後面 commit/push 的步驟，不會把 gh-pages 上原本好好的資料蓋成空的。
+    # 這裡明確補回這個檢查——全部來源都沒資料時直接中止，不寫檔、不發布。
+    if not all_points:
+        print("錯誤：全部資料源都抓取失敗，沒有任何資料可發布，中止執行（保留 gh-pages 上原本的資料，不覆蓋成空的）。")
+        sys.exit(1)
+
+
 def main() -> None:
     import hsinchu
     import kaohsiung
@@ -78,6 +89,7 @@ def main() -> None:
     all_points = _fetch_all(
         (national_speed, taichung, taipei, tainan, hsinchu, kaohsiung, new_taipei)
     )
+    _abort_if_empty(all_points)
 
     output = build_output(all_points)
 
@@ -88,7 +100,7 @@ def main() -> None:
     with open(os.path.join(OUTPUT_DIR, "version.json"), "w", encoding="utf-8") as f:
         json.dump(output["version"], f, ensure_ascii=False, indent=2)
 
-    print(f"總計 {len(all_points)} 筆，輸出到 {OUTPUT_DIR}")
+    print(f"總計 {output['version']['point_count']} 筆，輸出到 {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
