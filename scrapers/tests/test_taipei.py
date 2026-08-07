@@ -24,8 +24,15 @@ def test_parse_taipei_coords_are_already_lat_lng_no_conversion_needed():
 
 
 def test_parse_taipei_handles_multiline_quoted_field():
-    first = _load()[0]
+    rows = _load()
+    # Multiline field (啟用日期) sits between address and violation_types in the CSV.
+    # A naive line-splitting parser would break the row count (not 2) and would
+    # mangle 取締項目 (the field after the multiline column) — asserting on those
+    # two things, not just address, is what actually proves multiline handling.
+    assert len(rows) == 2
+    first = rows[0]
     assert first.address == "自強隧道"
+    assert set(first.violation_types) == {"speed", "cross_double_line"}
 
 
 def test_parse_taipei_violation_types():
