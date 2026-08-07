@@ -1672,7 +1672,11 @@ from datetime import datetime, timezone
 
 from schema import EnforcementPoint
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "gh-pages-build")
+# 用 abspath 而非單純 os.path.dirname(__file__)：後者在 __file__ 是相對路徑時
+# （例如用 `python publish.py` 從 scrapers/ 目錄內執行）算出來的結果會依執行時的
+# 工作目錄而變化。用 abspath 固定成「不管從哪裡呼叫，輸出目錄永遠是 scrapers/ 的上一層」，
+# 也就是 repo 根目錄下的 gh-pages-build/（跟 scrapers/ 同一層，不是 scrapers/gh-pages-build/）。
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gh-pages-build")
 
 
 def build_output(all_points: list[EnforcementPoint]) -> dict:
@@ -1744,7 +1748,7 @@ git commit -m "feat: 新增合併發布腳本"
 
 **Files:**
 - Create: `.github/workflows/scrape-data.yml`
-- Modify: `.gitignore:1`（新增 `scrapers/gh-pages-build/` 忽略規則，這是 Task 11 的本機輸出目錄，不該進 master 分支）
+- Modify: `.gitignore:1`（新增 `gh-pages-build/` 忽略規則——Task 11 的 `OUTPUT_DIR` 用 `os.path.abspath` 算出來，固定落在 repo 根目錄下的 `gh-pages-build/`，跟 `scrapers/` 同一層，不是 `scrapers/gh-pages-build/`，這是 Task 11 的本機輸出目錄，不該進 master 分支）
 
 **Interfaces:**
 - Consumes: `scrapers/publish.py` 的 `main()`（Task 11）
@@ -1801,10 +1805,10 @@ jobs:
 
       - name: Sync output into gh-pages checkout
         run: |
-          cp master/scrapers/gh-pages-build/points.json gh-pages/points.json
-          cp master/scrapers/gh-pages-build/parking.json gh-pages/parking.json
-          cp master/scrapers/gh-pages-build/sections.json gh-pages/sections.json
-          cp master/scrapers/gh-pages-build/version.json gh-pages/version.json
+          cp master/gh-pages-build/points.json gh-pages/points.json
+          cp master/gh-pages-build/parking.json gh-pages/parking.json
+          cp master/gh-pages-build/sections.json gh-pages/sections.json
+          cp master/gh-pages-build/version.json gh-pages/version.json
 
       - name: Commit and push gh-pages
         working-directory: gh-pages
