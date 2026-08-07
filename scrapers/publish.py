@@ -1,0 +1,64 @@
+"""合併 7 個資料源的輸出，寫成 points.json / parking.json / sections.json / version.json，
+放進 gh-pages/ 目錄（GitHub Actions 會把這個目錄的內容 commit 到 gh-pages 分支）。
+parking.json / sections.json 目前固定是空陣列——沒有任何資料源支援
+ParkingEnforcement（違停計時門檻）或 SectionSpeedZone（區間測速路段座標序列）的欄位，
+見 docs/superpowers/specs/2026-08-05-speed-camera-app-design.md 第 11 節已知限制。"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+
+from schema import EnforcementPoint
+
+# 用 abspath 而非單純 os.path.dirname(__file__)：後者在 __file__ 是相對路徑時
+# （例如用 `python publish.py` 從 scrapers/ 目錄內執行）算出來的結果會依執行時的
+# 工作目錄而變化。用 abspath 固定成「不管從哪裡呼叫，輸出目錄永遠是 scrapers/ 的上一層」，
+# 也就是 repo 根目錄下的 gh-pages-build/（跟 scrapers/ 同一層，不是 scrapers/gh-pages-build/）。
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gh-pages-build")
+
+
+def build_output(all_points: list[EnforcementPoint]) -> dict:
+    version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return {
+        "points": [p.to_dict() for p in all_points],
+        "parking": [],
+        "sections": [],
+        "version": {
+            "data_version": version,
+            "point_count": len(all_points),
+            "parking_count": 0,
+            "section_count": 0,
+        },
+    }
+
+
+def main() -> None:
+    import hsinchu
+    import kaohsiung
+    import national_speed
+    import new_taipei
+    import taichung
+    import tainan
+    import taipei
+
+    all_points: list[EnforcementPoint] = []
+    for module in (national_speed, taichung, taipei, tainan, hsinchu, kaohsiung, new_taipei):
+        points = module.fetch()
+        print(f"{module.__name__}: {len(points)} 筆")
+        all_points.extend(points)
+
+    output = build_output(all_points)
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    for name in ("points", "parking", "sections"):
+        with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump(output[name], f, ensure_ascii=False, indent=2)
+    with open(os.path.join(OUTPUT_DIR, "version.json"), "w", encoding="utf-8") as f:
+        json.dump(output["version"], f, ensure_ascii=False, indent=2)
+
+    print(f"總計 {len(all_points)} 筆，輸出到 {OUTPUT_DIR}")
+
+
+if __name__ == "__main__":
+    main()
