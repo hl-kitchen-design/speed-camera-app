@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -54,6 +55,19 @@ def test_geocode_no_results_caches_none():
 
     assert result is None
     assert cache["查不到的地址"] is None
+
+
+def test_geocode_network_error_caches_none_and_does_not_raise():
+    cache: dict = {}
+
+    with patch(
+        "geocode.urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ), patch("geocode.time.sleep"):
+        result = geocode_module.geocode("會逾時的地址", cache)
+
+    assert result is None
+    assert cache["會逾時的地址"] is None
 
 
 def test_load_and_save_cache_roundtrip(tmp_path):

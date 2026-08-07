@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -34,13 +35,15 @@ def geocode(query: str, cache: dict) -> tuple[float, float] | None:
     )
     req = urllib.request.Request(url, headers={"User-Agent": "speed-camera-app-scraper/1.0"})
     time.sleep(1)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        results = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            results = json.loads(resp.read().decode("utf-8"))
+        if not results:
+            lat_lng = None
+        else:
+            lat_lng = (float(results[0]["lat"]), float(results[0]["lon"]))
+    except (urllib.error.URLError, TimeoutError, KeyError, ValueError):
+        lat_lng = None
 
-    if not results:
-        cache[query] = None
-        return None
-
-    lat, lng = float(results[0]["lat"]), float(results[0]["lon"])
-    cache[query] = [lat, lng]
-    return (lat, lng)
+    cache[query] = list(lat_lng) if lat_lng else None
+    return lat_lng
