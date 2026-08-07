@@ -1386,7 +1386,16 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
             continue
 
         query = f"高雄市{district}區{location}"
-        coords = geocode(query, cache)
+        # 呼叫端先查一次快取，不要無條件呼叫 geocode()：geocode() 內部雖然也會查快取，
+        # 但測試用 patch("kaohsiung.geocode") 整個換掉函式時，patch 換掉的是包含內部
+        # 快取檢查在內的整個函式本體，所以測試判斷「快取已經有答案時不該呼叫 geocode()」
+        # 這件事，必須由呼叫端自己先判斷，不能依賴被 mock 掉的函式內部邏輯
+        # （Task 6 台南市 scraper review 時發現的同一個問題，這裡照同樣方式先修正）。
+        if query in cache:
+            cached = cache[query]
+            coords = (cached[0], cached[1]) if cached else None
+        else:
+            coords = geocode(query, cache)
         if coords:
             lat, lng, quality = coords[0], coords[1], "geocoded"
         else:
@@ -1536,7 +1545,14 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
             continue
 
         query = f"新北市{location}"
-        coords = geocode(query, cache)
+        # 呼叫端先查一次快取，理由跟高雄市/台南市 scraper 一樣（Task 6 review 時發現的
+        # 系統性問題）：測試 patch("new_taipei.geocode") 會整個換掉函式，繞過它內部的
+        # 快取檢查，所以「快取已有答案時不該呼叫 geocode()」這件事要靠呼叫端自己判斷。
+        if query in cache:
+            cached = cache[query]
+            coords = (cached[0], cached[1]) if cached else None
+        else:
+            coords = geocode(query, cache)
         if coords:
             lat, lng, quality = coords[0], coords[1], "geocoded"
         else:
