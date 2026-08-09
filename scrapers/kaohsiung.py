@@ -4,13 +4,23 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from geocode import geocode, load_cache, save_cache
+from geocode import extract_primary_road, load_cache, resolve_with_centroid_fallback, save_cache
 from html_table_parser import fetch_html_table_rows
 from schema import EnforcementPoint, classify_types, make_id
 
 SOURCE_NAME = "高雄市政府警察局固定式違規照相科技執法設備設置地點"
 SOURCE_URL = "https://kcpd.kcg.gov.tw/cp.aspx?n=693052840FE00C08"
 _HEADER = ["編號", "型式", "測照地點", "測照方向", "速限", "行政區", "測照型式", "地圖"]
+
+
+def _build_full_query(district: str, location: str) -> str:
+    # 來源資料的「測照地點」欄位有時已經自帶行政區前綴（例如「三民區建國二路與復興一路」），
+    # 這種情況不能再加一次「{district}區」，否則查詢字串會變成「三民區三民區...」查不到任何結果。
+    # 只判斷「{district}區」這個完整前綴（不是單純 startswith(district)），
+    # 避免誤判路名剛好跟行政區同名開頭的情況（例如「楠梓路」不該被當成「楠梓區」重複）。
+    if location.startswith(f"{district}區"):
+        return f"高雄市{location}"
+    return f"高雄市{district}區{location}"
 
 
 def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoint]:
@@ -22,21 +32,11 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
         if not location:
             continue
 
-        query = f"高雄市{district}區{location}"
-        # 呼叫端先查一次快取，不要無條件呼叫 geocode()：geocode() 內部雖然也會查快取，
-        # 但測試用 patch("kaohsiung.geocode") 整個換掉函式時，patch 換掉的是包含內部
-        # 快取檢查在內的整個函式本體，所以測試判斷「快取已經有答案時不該呼叫 geocode()」
-        # 這件事，必須由呼叫端自己先判斷，不能依賴被 mock 掉的函式內部邏輯
-        # （Task 6 台南市 scraper review 時發現的同一個問題，這裡照同樣方式先修正）。
-        if query in cache:
-            cached = cache[query]
-            coords = (cached[0], cached[1]) if cached else None
-        else:
-            coords = geocode(query, cache)
-        if coords:
-            lat, lng, quality = coords[0], coords[1], "geocoded"
-        else:
-            lat, lng, quality = None, None, "no-coords"
+        full_query = _build_full_query(district, location)
+        primary_query = f"高雄市{district}區{extract_primary_road(location)}"
+        centroid_query = f"高雄市{district}區"
+        coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
+        lat, lng = (coords[0], coords[1]) if coords else (None, None)
 
         raw_type = row.get("測照型式", "")
         points.append(
