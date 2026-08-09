@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -15,14 +16,6 @@ def test_geocode_uses_cache_without_network_call():
         result = geocode_module.geocode("台南市北門路", cache)
     mock_urlopen.assert_not_called()
     assert result == (23.0, 120.2)
-
-
-def test_geocode_cached_none_returns_none_without_network_call():
-    cache = {"查不到的地址": None}
-    with patch("geocode.urllib.request.urlopen") as mock_urlopen:
-        result = geocode_module.geocode("查不到的地址", cache)
-    mock_urlopen.assert_not_called()
-    assert result is None
 
 
 def test_geocode_calls_nominatim_and_caches_result():
@@ -43,7 +36,7 @@ def test_geocode_calls_nominatim_and_caches_result():
     assert cache["台南市中西區某路"] == [22.9998, 120.2027]
 
 
-def test_geocode_no_results_caches_none():
+def test_geocode_no_results_caches_not_found_with_timestamp():
     cache: dict = {}
     fake_response = MagicMock()
     fake_response.read.return_value = b"[]"
@@ -54,10 +47,13 @@ def test_geocode_no_results_caches_none():
         result = geocode_module.geocode("查不到的地址", cache)
 
     assert result is None
-    assert cache["查不到的地址"] is None
+    cached = cache["查不到的地址"]
+    assert cached["lat"] is None
+    assert cached["lng"] is None
+    assert "checked_at" in cached
 
 
-def test_geocode_network_error_caches_none_and_does_not_raise():
+def test_geocode_network_error_does_not_write_cache():
     cache: dict = {}
 
     with patch(
@@ -67,7 +63,45 @@ def test_geocode_network_error_caches_none_and_does_not_raise():
         result = geocode_module.geocode("會逾時的地址", cache)
 
     assert result is None
-    assert cache["會逾時的地址"] is None
+    assert "會逾時的地址" not in cache  # 暫時性錯誤不落地，下次排程會自動重試
+
+
+def test_geocode_not_found_within_cooldown_skips_network():
+    recent = datetime.now(timezone.utc).isoformat()
+    cache = {"最近查過查不到": {"lat": None, "lng": None, "checked_at": recent}}
+    with patch("geocode.urllib.request.urlopen") as mock_urlopen:
+        result = geocode_module.geocode("最近查過查不到", cache)
+    mock_urlopen.assert_not_called()
+    assert result is None
+
+
+def test_geocode_not_found_after_cooldown_retries_network():
+    expired = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    cache = {"很久以前查過查不到": {"lat": None, "lng": None, "checked_at": expired}}
+    fake_response = MagicMock()
+    fake_response.read.return_value = b"[]"
+    fake_response.__enter__.return_value = fake_response
+
+    with patch("geocode.urllib.request.urlopen", return_value=fake_response) as mock_urlopen, \
+         patch("geocode.time.sleep"):
+        result = geocode_module.geocode("很久以前查過查不到", cache)
+
+    mock_urlopen.assert_called_once()
+    assert result is None
+
+
+def test_geocode_legacy_bare_null_cache_retries_network():
+    cache = {"舊格式查不到": None}
+    fake_response = MagicMock()
+    fake_response.read.return_value = b"[]"
+    fake_response.__enter__.return_value = fake_response
+
+    with patch("geocode.urllib.request.urlopen", return_value=fake_response) as mock_urlopen, \
+         patch("geocode.time.sleep"):
+        result = geocode_module.geocode("舊格式查不到", cache)
+
+    mock_urlopen.assert_called_once()  # 舊格式沒有 checked_at，視為冷卻已過期
+    assert result is None
 
 
 def test_load_and_save_cache_roundtrip(tmp_path):
