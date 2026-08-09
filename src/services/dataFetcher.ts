@@ -10,7 +10,7 @@ export interface RemoteEnforcementPoint {
   violation_types: string[];
   source_name: string;
   source_url: string;
-  data_quality: 'coords' | 'geocoded' | 'no-coords';
+  data_quality: 'coords' | 'geocoded' | 'district-centroid' | 'no-coords';
   fetched_at: string;
 }
 
