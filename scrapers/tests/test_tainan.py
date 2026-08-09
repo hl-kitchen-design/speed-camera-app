@@ -15,27 +15,42 @@ def _load(cache):
 
 
 def test_parse_tainan_extracts_road_name_before_bracket():
-    cache = {"台南市北門路段": [23.0, 120.2], "台南市中華西路與府前路口": [24.0, 121.0]}
-    with patch("tainan.geocode") as mock_geocode:
-        points = _load(cache)
-    mock_geocode.assert_not_called()  # 已在快取裡，不應該再呼叫
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "geocoded")) as mock_resolve:
+        points = _load({})
+    full_query = mock_resolve.call_args_list[0][0][0]
+    assert full_query == "台南市北門路段"
     assert points[0].address == "北門路段"
     assert points[0].lat == 23.0
     assert points[0].lng == 120.2
     assert points[0].data_quality == "geocoded"
 
 
+def test_parse_tainan_builds_three_level_queries_for_intersection():
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "geocoded")) as mock_resolve:
+        _load({})
+    second_call_args = mock_resolve.call_args_list[1][0]
+    assert second_call_args[0] == "台南市中華西路與府前路口"
+    assert second_call_args[1] == "台南市中華西路"
+    assert second_call_args[2] == "台南市"
+
+
 def test_parse_tainan_extracts_types_from_brackets():
-    cache = {"台南市北門路段": [23.0, 120.2], "台南市中華西路與府前路口": [23.0, 120.2]}
-    points = _load(cache)
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "geocoded")):
+        points = _load({})
     assert "illegal_parking" in points[0].violation_types
     # 括號內文字同時含「未依標誌標線行駛等」，classify_types 會依關鍵字表額外辨識出 illegal_turn
     assert set(points[1].violation_types) == {"red_light", "illegal_turn"}
 
 
+def test_parse_tainan_passes_through_district_centroid_quality():
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "district-centroid")):
+        points = _load({})
+    assert points[0].data_quality == "district-centroid"
+
+
 def test_parse_tainan_no_geocode_result_has_no_coords_quality():
-    cache = {"台南市北門路段": None, "台南市中華西路與府前路口": None}
-    points = _load(cache)
+    with patch("tainan.resolve_with_centroid_fallback", return_value=(None, "no-coords")):
+        points = _load({})
     assert points[0].lat is None
     assert points[0].lng is None
     assert points[0].data_quality == "no-coords"

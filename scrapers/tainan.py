@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from geocode import geocode, load_cache, save_cache
+from geocode import extract_primary_road, load_cache, resolve_with_centroid_fallback, save_cache
 from schema import EnforcementPoint, classify_types, make_id
 
 SOURCE_NAME = "臺南市智慧管理科技執法設備設置地點"
@@ -48,16 +48,11 @@ def parse_tainan(csv_text: str, cache: dict) -> list[EnforcementPoint]:
         bracket_match = _BRACKET_RE.search(location_text)
         raw_types = bracket_match.group(1) if bracket_match else location_text
 
-        query = f"台南市{road_name}"
-        if query in cache:
-            cached = cache[query]
-            coords = (cached[0], cached[1]) if cached else None
-        else:
-            coords = geocode(query, cache)
-        if coords:
-            lat, lng, quality = coords[0], coords[1], "geocoded"
-        else:
-            lat, lng, quality = None, None, "no-coords"
+        full_query = f"台南市{road_name}"
+        primary_query = f"台南市{extract_primary_road(road_name)}"
+        centroid_query = "台南市"
+        coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
+        lat, lng = (coords[0], coords[1]) if coords else (None, None)
 
         points.append(
             EnforcementPoint(
