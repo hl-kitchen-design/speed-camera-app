@@ -35,7 +35,7 @@ C2（地圖無過濾渲染 2168 個 Marker）不在本文件範圍，留待下�
 
 **Level 1（完整字串，沿用現有組法，但修好高雄的重複行政區 bug）**：
 ```python
-if location.startswith(district) or location.startswith(f"{district}區"):
+if location.startswith(f"{district}區"):
     query = f"高雄市{location}"
 else:
     query = f"高雄市{district}區{location}"
