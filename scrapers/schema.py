@@ -79,7 +79,7 @@ class EnforcementPoint:
     violation_types: list[str]
     source_name: str
     source_url: str
-    data_quality: str  # "coords" | "geocoded" | "no-coords"
+    data_quality: str  # "coords" | "geocoded" | "district-centroid" | "no-coords"
     fetched_at: str
 
     def to_dict(self) -> dict:
