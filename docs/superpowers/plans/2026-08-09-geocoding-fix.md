@@ -556,7 +556,7 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
             continue
 
         full_query = _build_full_query(district, location)
-        primary_query = f"高雄市{district}區{extract_primary_road(location)}"
+        primary_query = _build_full_query(district, extract_primary_road(location))
         centroid_query = f"高雄市{district}區"
         coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
         lat, lng = (coords[0], coords[1]) if coords else (None, None)
@@ -983,3 +983,4 @@ Run: `git add .superpowers/sdd/2026-08-07-phase2a-real-enforcement-data/progress
 - **型別一致性**：`geocode_with_fallback(queries: list[str], cache: dict) -> tuple[float, float] | None`、`extract_primary_road(text: str) -> str`、`resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache) -> tuple[tuple[float, float] | None, str]` 的簽章在 Task 2 定義後，Task 3/4/5 全部一致引用，沒有改名或參數順序不一致的狀況。
 - **DRY 修正**：原本 Task 3/4/5 會各自重複實作「試 fallback → 查中心點 → 組 quality」同一段 if/else，執行前重新檢視時發現這會被 code review 判定為重複邏輯，已收斂成 Task 2 的 `resolve_with_centroid_fallback()` 共用函式，三個 scraper 現在只負責組查詢字串。
 - **邊界情況修正**：高雄行政區重複判斷原本用 `location.startswith(district) or location.startswith(f"{district}區")`，後者的裸 `startswith(district)` 條件在路名剛好跟行政區同名開頭時（例如「楠梓路」對上「楠梓區」）會誤判成重複而漏加前綴，已收斂成只用 `location.startswith(f"{district}區")` 這個精確條件（同步修正了設計文件）。
+- **執行期間發現並修正**：Task 3 執行後 task reviewer 抓到 `primary_query` 這行原本寫成 `f"高雄市{district}區{extract_primary_road(location)}"`，對 `extract_primary_road` 傳回值仍帶行政區前綴的情況（189/264 筆受影響的同一批資料）會重新複製一次重複 bug。已改成 `_build_full_query(district, extract_primary_road(location))`，重用同一份已驗證正確的去重邏輯，本檔案上面的 Task 3 Step 3 程式碼已同步更新為修正後版本。
