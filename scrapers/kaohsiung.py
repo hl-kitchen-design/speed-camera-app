@@ -33,7 +33,7 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
             continue
 
         full_query = _build_full_query(district, location)
-        primary_query = f"高雄市{district}區{extract_primary_road(location)}"
+        primary_query = _build_full_query(district, extract_primary_road(location))
         centroid_query = f"高雄市{district}區"
         coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
         lat, lng = (coords[0], coords[1]) if coords else (None, None)

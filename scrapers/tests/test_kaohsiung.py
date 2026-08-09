@@ -50,8 +50,9 @@ def test_build_points_builds_three_level_queries_correctly():
 def test_build_points_does_not_duplicate_district_when_location_already_has_it():
     with patch("kaohsiung.resolve_with_centroid_fallback", return_value=((22.6, 120.3), "geocoded")) as mock_resolve:
         build_points(DUPLICATE_DISTRICT_ROWS, {})
-    full_query = mock_resolve.call_args[0][0]
+    full_query, primary_query, centroid_query, cache = mock_resolve.call_args[0]
     assert full_query == "高雄市三民區建國二路與復興一路"  # 不是「高雄市三民區三民區建國二路與復興一路」
+    assert primary_query == "高雄市三民區建國二路"  # 主要道路名也不能重複行政區名
 
 
 def test_build_points_passes_through_district_centroid_quality():
