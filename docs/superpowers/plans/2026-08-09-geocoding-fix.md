@@ -4,7 +4,7 @@
 
 **Goal:** 讓高雄市、新北市、臺南市共 410 筆（目前因地理編碼幾乎全滅而在地圖上不可見的真實資料）恢復可見，靠查詢字串三級回退與正確的快取重試邏輯，不整合新的 geocoding provider。
 
-**Architecture:** `geocode.py` 新增 `geocode_with_fallback()`（依序嘗試多個查詢字串）與 `extract_primary_road()`（從路口交叉描述擷取主要道路名），並重寫 `geocode()` 的快取 schema 以區分「暫時性錯誤」（不落地、下次自動重試）與「確定查無結果」（存 30 天冷卻期）。三個受影響的 scraper（`kaohsiung.py`、`tainan.py`、`new_taipei.py`）改用三級回退（完整字串 → 主要道路名 → 縣市/行政區中心點），高雄額外修復查詢字串重複行政區名的 bug。
+**Architecture:** `geocode.py` 新增三個共用工具：`geocode_with_fallback()`（依序嘗試多個查詢字串）、`extract_primary_road()`（從路口交叉描述擷取主要道路名）、`resolve_with_centroid_fallback()`（把「完整字串→主要道路名→縣市/行政區中心點」三級回退跟 `data_quality` 判定整個包起來，三個 scraper 共用同一份邏輯，不各自重複）。並重寫 `geocode()` 的快取 schema 以區分「暫時性錯誤」（不落地、下次自動重試）與「確定查無結果」（存 30 天冷卻期）。三個受影響的 scraper（`kaohsiung.py`、`tainan.py`、`new_taipei.py`）改成只負責組出三段查詢字串再交給 `resolve_with_centroid_fallback()`，高雄額外修復查詢字串重複行政區名的 bug。
 
 **Tech Stack:** Python 3.12、pytest、`urllib`（不換套件）、TypeScript（App 端型別更新）。
 
@@ -14,6 +14,7 @@
 - 確定查無結果的快取冷卻期固定 30 天（`NOT_FOUND_COOLDOWN_DAYS = 30`）
 - Nominatim 呼叫頻率限制維持每秒最多 1 次（現有 `time.sleep(1)` 不變）
 - 新的 `data_quality` 值固定字串 `"district-centroid"`（縣市/行政區中心點回退）
+- 三個 scraper 的「三級回退 + quality 判定」邏輯必須共用同一個 `geocode.py` 裡的函式（`resolve_with_centroid_fallback`），不得各自重複實作同一段 if/else
 - 範圍不含：C2（地圖 2168 點無過濾渲染）、I1-I5、9 個 Minor 項目、Task 14 Step 6 手機實機驗證——這些留在 ledger PARKED 區塊，不在本計畫處理
 - 所有變更都在 master 分支直接開發（這個 repo 的既有慣例，不開 worktree/PR）
 
@@ -229,7 +230,7 @@ def geocode(query: str, cache: dict) -> tuple[float, float] | None:
     return lat_lng
 ```
 
-（這一步先不加 `geocode_with_fallback` 跟 `extract_primary_road`，那是 Task 2）
+（這一步先不加 `geocode_with_fallback`、`extract_primary_road`、`resolve_with_centroid_fallback`，那是 Task 2）
 
 - [ ] **Step 4: 執行測試，確認全部通過**
 
@@ -248,7 +249,7 @@ git commit -m "fix: geocode 快取分離暫時性錯誤與確定查無結果，�
 
 ---
 
-## Task 2: geocode.py 新增查詢降級工具 — geocode_with_fallback() 與 extract_primary_road()
+## Task 2: geocode.py 新增查詢降級工具與共用回退函式
 
 **Files:**
 - Modify: `scrapers/geocode.py`
@@ -258,8 +259,9 @@ git commit -m "fix: geocode 快取分離暫時性錯誤與確定查無結果，�
 - Consumes: `geocode(query: str, cache: dict) -> tuple[float, float] | None`（Task 1 產出）
 - Produces: `geocode_with_fallback(queries: list[str], cache: dict) -> tuple[float, float] | None`
 - Produces: `extract_primary_road(text: str) -> str`
+- Produces: `resolve_with_centroid_fallback(full_query: str, primary_query: str, centroid_query: str, cache: dict) -> tuple[tuple[float, float] | None, str]`——回傳 `(座標或None, data_quality字串)`，`data_quality` 是 `"geocoded"` / `"district-centroid"` / `"no-coords"` 三選一。三個 scraper（Task 3/4/5）唯一該呼叫的進入點，取代各自重複「試 fallback → 查中心點 → 組 quality」的 if/else。
 
-- [ ] **Step 1: 在 `test_geocode.py` 追加 `geocode_with_fallback` 與 `extract_primary_road` 的測試**
+- [ ] **Step 1: 在 `test_geocode.py` 追加三個新函式的測試**
 
 在檔案最後追加：
 
@@ -305,14 +307,47 @@ def test_extract_primary_road_strips_trailing_junction_suffix_without_split():
 
 def test_extract_primary_road_returns_unchanged_when_no_markers():
     assert geocode_module.extract_primary_road("同盟一路高醫大門") == "同盟一路高醫大門"
+
+
+def test_resolve_with_centroid_fallback_returns_geocoded_when_first_level_succeeds():
+    with patch("geocode.geocode_with_fallback", return_value=(23.0, 120.0)) as mock_fallback, \
+         patch("geocode.geocode") as mock_geocode:
+        coords, quality = geocode_module.resolve_with_centroid_fallback(
+            "完整字串", "主要道路", "中心點", {}
+        )
+    mock_fallback.assert_called_once_with(["完整字串", "主要道路"], {})
+    mock_geocode.assert_not_called()
+    assert coords == (23.0, 120.0)
+    assert quality == "geocoded"
+
+
+def test_resolve_with_centroid_fallback_returns_district_centroid_when_only_centroid_succeeds():
+    with patch("geocode.geocode_with_fallback", return_value=None), \
+         patch("geocode.geocode", return_value=(23.0, 120.0)) as mock_geocode:
+        coords, quality = geocode_module.resolve_with_centroid_fallback(
+            "完整字串", "主要道路", "中心點", {}
+        )
+    mock_geocode.assert_called_once_with("中心點", {})
+    assert coords == (23.0, 120.0)
+    assert quality == "district-centroid"
+
+
+def test_resolve_with_centroid_fallback_returns_no_coords_when_everything_fails():
+    with patch("geocode.geocode_with_fallback", return_value=None), \
+         patch("geocode.geocode", return_value=None):
+        coords, quality = geocode_module.resolve_with_centroid_fallback(
+            "完整字串", "主要道路", "中心點", {}
+        )
+    assert coords is None
+    assert quality == "no-coords"
 ```
 
 - [ ] **Step 2: 執行測試，確認新測試會失敗**
 
 Run: `cd scrapers && python -m pytest tests/test_geocode.py -v`
-Expected: 上面 8 個新測試 FAIL，錯誤是 `AttributeError: module 'geocode' has no attribute 'geocode_with_fallback'`（或 `extract_primary_road`）
+Expected: 上面 11 個新測試 FAIL，錯誤是 `AttributeError: module 'geocode' has no attribute 'geocode_with_fallback'`（或 `extract_primary_road`、`resolve_with_centroid_fallback`）
 
-- [ ] **Step 3: 在 `geocode.py` 加入 `geocode_with_fallback` 與 `extract_primary_road`**
+- [ ] **Step 3: 在 `geocode.py` 加入三個新函式**
 
 先把檔案開頭的 import 區塊加上 `import re`（跟現有的 `import json` 等排在一起，按字母順序插在 `import os` 之後）：
 
@@ -355,21 +390,38 @@ def extract_primary_road(text: str) -> str:
     primary = _INTERSECTION_SPLIT_RE.split(without_paren)[0]
     primary = _TRAILING_JUNCTION_RE.sub("", primary)
     return primary.strip()
+
+
+def resolve_with_centroid_fallback(
+    full_query: str, primary_query: str, centroid_query: str, cache: dict
+) -> tuple[tuple[float, float] | None, str]:
+    """三級查詢回退的共用進入點：完整字串→主要道路名→縣市/行政區中心點，
+    回傳 (座標或None, data_quality)。kaohsiung.py/tainan.py/new_taipei.py 三個
+    scraper 共用同一份邏輯，各自只需要組出三段查詢字串。"""
+    coords = geocode_with_fallback([full_query, primary_query], cache)
+    if coords:
+        return coords, "geocoded"
+    coords = geocode(centroid_query, cache)
+    if coords:
+        return coords, "district-centroid"
+    return None, "no-coords"
 ```
 
 - [ ] **Step 4: 執行測試，確認全部通過**
 
 Run: `cd scrapers && python -m pytest tests/test_geocode.py -v`
-Expected: 全部 PASS（共 15 個測試）
+Expected: 全部 PASS（共 18 個測試）
 
 - [ ] **Step 5: Commit**
 
 ```bash
 cd scrapers && git add geocode.py tests/test_geocode.py
-git commit -m "feat: geocode 新增多級查詢回退與主要道路名擷取工具
+git commit -m "feat: geocode 新增多級查詢回退、主要道路名擷取、三級回退共用進入點
 
 geocode_with_fallback() 依序嘗試多個查詢字串直到成功；
-extract_primary_road() 從路口交叉描述擷取主要道路名，供查詢降級用。"
+extract_primary_road() 從路口交叉描述擷取主要道路名；
+resolve_with_centroid_fallback() 把三級回退+quality判定包成單一進入點，
+給三個scraper共用，避免各自重複實作同一段if/else。"
 ```
 
 ---
@@ -381,7 +433,7 @@ extract_primary_road() 從路口交叉描述擷取主要道路名，供查詢降
 - Test: `scrapers/tests/test_kaohsiung.py`
 
 **Interfaces:**
-- Consumes: `geocode(query, cache)`、`geocode_with_fallback(queries, cache)`、`extract_primary_road(text)`（Task 1、2 產出，從 `geocode` 模組 import）
+- Consumes: `extract_primary_road(text)`、`resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)`（Task 1、2 產出，從 `geocode` 模組 import）
 - Produces: `build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoint]`（簽章不變，行為改變：三級回退 + 不再重複行政區名）
 
 - [ ] **Step 1: 改寫 `test_kaohsiung.py`**
@@ -424,11 +476,13 @@ DUPLICATE_DISTRICT_ROWS = [
 ]
 
 
-def test_build_points_geocodes_at_full_query_level():
-    with patch("kaohsiung.geocode_with_fallback", return_value=(22.65, 120.31)) as mock_fallback:
+def test_build_points_builds_three_level_queries_correctly():
+    with patch("kaohsiung.resolve_with_centroid_fallback", return_value=((22.65, 120.31), "geocoded")) as mock_resolve:
         points = build_points(SAMPLE_ROWS, {})
-    queries_used = mock_fallback.call_args[0][0]
-    assert queries_used[0] == "高雄市三民區民族一路與十全一路口"
+    full_query, primary_query, centroid_query, cache = mock_resolve.call_args[0]
+    assert full_query == "高雄市三民區民族一路與十全一路口"
+    assert primary_query == "高雄市三民區民族一路"
+    assert centroid_query == "高雄市三民區"
     assert points[0].lat == 22.65
     assert points[0].lng == 120.31
     assert points[0].data_quality == "geocoded"
@@ -437,32 +491,21 @@ def test_build_points_geocodes_at_full_query_level():
 
 
 def test_build_points_does_not_duplicate_district_when_location_already_has_it():
-    with patch("kaohsiung.geocode_with_fallback", return_value=(22.6, 120.3)) as mock_fallback:
+    with patch("kaohsiung.resolve_with_centroid_fallback", return_value=((22.6, 120.3), "geocoded")) as mock_resolve:
         build_points(DUPLICATE_DISTRICT_ROWS, {})
-    queries_used = mock_fallback.call_args[0][0]
-    assert queries_used[0] == "高雄市三民區建國二路與復興一路"  # 不是「高雄市三民區三民區建國二路與復興一路」
+    full_query = mock_resolve.call_args[0][0]
+    assert full_query == "高雄市三民區建國二路與復興一路"  # 不是「高雄市三民區三民區建國二路與復興一路」
 
 
-def test_build_points_second_query_is_primary_road_name():
-    with patch("kaohsiung.geocode_with_fallback", return_value=None) as mock_fallback, \
-         patch("kaohsiung.geocode", return_value=None):
-        build_points(SAMPLE_ROWS, {})
-    queries_used = mock_fallback.call_args[0][0]
-    assert queries_used[1] == "高雄市三民區民族一路"
-
-
-def test_build_points_falls_back_to_district_centroid():
-    with patch("kaohsiung.geocode_with_fallback", return_value=None), \
-         patch("kaohsiung.geocode", return_value=(22.6, 120.3)) as mock_geocode:
+def test_build_points_passes_through_district_centroid_quality():
+    with patch("kaohsiung.resolve_with_centroid_fallback", return_value=((22.6, 120.3), "district-centroid")):
         points = build_points(SAMPLE_ROWS, {})
-    mock_geocode.assert_called_once_with("高雄市三民區", {})
     assert points[0].lat == 22.6
     assert points[0].data_quality == "district-centroid"
 
 
-def test_build_points_no_coords_when_all_levels_fail():
-    with patch("kaohsiung.geocode_with_fallback", return_value=None), \
-         patch("kaohsiung.geocode", return_value=None):
+def test_build_points_no_coords_when_resolve_fails():
+    with patch("kaohsiung.resolve_with_centroid_fallback", return_value=(None, "no-coords")):
         points = build_points(SAMPLE_ROWS, {})
     assert points[0].lat is None
     assert points[0].data_quality == "no-coords"
@@ -471,7 +514,7 @@ def test_build_points_no_coords_when_all_levels_fail():
 - [ ] **Step 2: 執行測試，確認會失敗**
 
 Run: `cd scrapers && python -m pytest tests/test_kaohsiung.py -v`
-Expected: 全部 FAIL 或 ERROR（`build_points` 還沒改，`kaohsiung.geocode_with_fallback` 還不存在）
+Expected: 全部 FAIL 或 ERROR（`build_points` 還沒改，`kaohsiung.resolve_with_centroid_fallback` 還不存在）
 
 - [ ] **Step 3: 改寫 `kaohsiung.py`**
 
@@ -484,7 +527,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from geocode import extract_primary_road, geocode, geocode_with_fallback, load_cache, save_cache
+from geocode import extract_primary_road, load_cache, resolve_with_centroid_fallback, save_cache
 from html_table_parser import fetch_html_table_rows
 from schema import EnforcementPoint, classify_types, make_id
 
@@ -514,12 +557,8 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
 
         full_query = _build_full_query(district, location)
         primary_query = f"高雄市{district}區{extract_primary_road(location)}"
-        coords = geocode_with_fallback([full_query, primary_query], cache)
-        if coords:
-            quality = "geocoded"
-        else:
-            coords = geocode(f"高雄市{district}區", cache)
-            quality = "district-centroid" if coords else "no-coords"
+        centroid_query = f"高雄市{district}區"
+        coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
         lat, lng = (coords[0], coords[1]) if coords else (None, None)
 
         raw_type = row.get("測照型式", "")
@@ -557,7 +596,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 執行測試，確認全部通過**
 
 Run: `cd scrapers && python -m pytest tests/test_kaohsiung.py -v`
-Expected: 全部 PASS（5 個測試）
+Expected: 全部 PASS（4 個測試）
 
 - [ ] **Step 5: Commit**
 
@@ -578,7 +617,7 @@ git commit -m "fix: 高雄scraper改用三級查詢回退，修復查詢字串�
 - Test: `scrapers/tests/test_tainan.py`
 
 **Interfaces:**
-- Consumes: `geocode(query, cache)`、`geocode_with_fallback(queries, cache)`、`extract_primary_road(text)`（Task 1、2 產出）
+- Consumes: `extract_primary_road(text)`、`resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)`（Task 1、2 產出）
 - Produces: `parse_tainan(csv_text: str, cache: dict) -> list[EnforcementPoint]`（簽章不變，行為改變：三級回退）
 
 - [ ] **Step 1: 改寫 `test_tainan.py`**
@@ -603,43 +642,41 @@ def _load(cache):
 
 
 def test_parse_tainan_extracts_road_name_before_bracket():
-    with patch("tainan.geocode_with_fallback", return_value=(23.0, 120.2)) as mock_fallback:
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "geocoded")) as mock_resolve:
         points = _load({})
-    first_call_queries = mock_fallback.call_args_list[0][0][0]
-    assert first_call_queries[0] == "台南市北門路段"
+    full_query = mock_resolve.call_args_list[0][0][0]
+    assert full_query == "台南市北門路段"
     assert points[0].address == "北門路段"
     assert points[0].lat == 23.0
     assert points[0].lng == 120.2
     assert points[0].data_quality == "geocoded"
 
 
-def test_parse_tainan_second_query_is_primary_road_name_for_intersection():
-    with patch("tainan.geocode_with_fallback", return_value=None) as mock_fallback, \
-         patch("tainan.geocode", return_value=None):
+def test_parse_tainan_builds_three_level_queries_for_intersection():
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "geocoded")) as mock_resolve:
         _load({})
-    second_row_queries = mock_fallback.call_args_list[1][0][0]
-    assert second_row_queries == ["台南市中華西路與府前路口", "台南市中華西路"]
+    second_call_args = mock_resolve.call_args_list[1][0]
+    assert second_call_args[0] == "台南市中華西路與府前路口"
+    assert second_call_args[1] == "台南市中華西路"
+    assert second_call_args[2] == "台南市"
 
 
 def test_parse_tainan_extracts_types_from_brackets():
-    with patch("tainan.geocode_with_fallback", return_value=(23.0, 120.2)):
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "geocoded")):
         points = _load({})
     assert "illegal_parking" in points[0].violation_types
     # 括號內文字同時含「未依標誌標線行駛等」，classify_types 會依關鍵字表額外辨識出 illegal_turn
     assert set(points[1].violation_types) == {"red_light", "illegal_turn"}
 
 
-def test_parse_tainan_falls_back_to_county_centroid():
-    with patch("tainan.geocode_with_fallback", return_value=None), \
-         patch("tainan.geocode", return_value=(23.0, 120.2)) as mock_geocode:
+def test_parse_tainan_passes_through_district_centroid_quality():
+    with patch("tainan.resolve_with_centroid_fallback", return_value=((23.0, 120.2), "district-centroid")):
         points = _load({})
-    mock_geocode.assert_called_with("台南市", {})
     assert points[0].data_quality == "district-centroid"
 
 
 def test_parse_tainan_no_geocode_result_has_no_coords_quality():
-    with patch("tainan.geocode_with_fallback", return_value=None), \
-         patch("tainan.geocode", return_value=None):
+    with patch("tainan.resolve_with_centroid_fallback", return_value=(None, "no-coords")):
         points = _load({})
     assert points[0].lat is None
     assert points[0].lng is None
@@ -656,7 +693,7 @@ Expected: 全部 FAIL 或 ERROR
 把 `scrapers/tainan.py` 裡 `from geocode import geocode, load_cache, save_cache` 這行（第 14 行）換成：
 
 ```python
-from geocode import extract_primary_road, geocode, geocode_with_fallback, load_cache, save_cache
+from geocode import extract_primary_road, load_cache, resolve_with_centroid_fallback, save_cache
 ```
 
 把 `parse_tainan` 函式裡（第 38-77 行）查詢/座標判斷這段：
@@ -679,12 +716,8 @@ from geocode import extract_primary_road, geocode, geocode_with_fallback, load_c
 ```python
         full_query = f"台南市{road_name}"
         primary_query = f"台南市{extract_primary_road(road_name)}"
-        coords = geocode_with_fallback([full_query, primary_query], cache)
-        if coords:
-            quality = "geocoded"
-        else:
-            coords = geocode("台南市", cache)
-            quality = "district-centroid" if coords else "no-coords"
+        centroid_query = "台南市"
+        coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
         lat, lng = (coords[0], coords[1]) if coords else (None, None)
 ```
 
@@ -709,7 +742,7 @@ git commit -m "fix: 台南scraper改用三級查詢回退（完整字串→主�
 - Test: `scrapers/tests/test_new_taipei.py`
 
 **Interfaces:**
-- Consumes: `geocode(query, cache)`、`geocode_with_fallback(queries, cache)`、`extract_primary_road(text)`（Task 1、2 產出）
+- Consumes: `extract_primary_road(text)`、`resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)`（Task 1、2 產出）
 - Produces: `build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoint]`（簽章不變，行為改變：三級回退）
 
 - [ ] **Step 1: 改寫 `test_new_taipei.py`**
@@ -731,35 +764,33 @@ SAMPLE_ROWS = [
 ]
 
 
-def test_build_points_geocodes_with_new_taipei_prefix():
-    with patch("new_taipei.geocode_with_fallback", return_value=(25.01, 121.46)) as mock_fallback:
+def test_build_points_builds_three_level_queries_correctly():
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")) as mock_resolve:
         points = build_points(SAMPLE_ROWS, {})
-    first_call_queries = mock_fallback.call_args_list[0][0][0]
-    assert first_call_queries[0] == "新北市板橋區文化路與民生路口"
-    assert first_call_queries[1] == "新北市板橋區文化路"
+    full_query, primary_query, centroid_query, cache = mock_resolve.call_args[0]
+    assert full_query == "新北市板橋區文化路與民生路口"
+    assert primary_query == "新北市板橋區文化路"
+    assert centroid_query == "新北市"
     assert points[0].lat == 25.01
     assert points[0].data_quality == "geocoded"
 
 
-def test_build_points_falls_back_to_county_centroid():
-    with patch("new_taipei.geocode_with_fallback", return_value=None), \
-         patch("new_taipei.geocode", return_value=(25.0, 121.5)) as mock_geocode:
+def test_build_points_passes_through_district_centroid_quality():
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.0, 121.5), "district-centroid")):
         points = build_points(SAMPLE_ROWS, {})
-    mock_geocode.assert_called_with("新北市", {})
     assert points[0].lat == 25.0
     assert points[0].data_quality == "district-centroid"
 
 
-def test_build_points_no_coords_when_all_levels_fail():
-    with patch("new_taipei.geocode_with_fallback", return_value=None), \
-         patch("new_taipei.geocode", return_value=None):
+def test_build_points_no_coords_when_resolve_fails():
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=(None, "no-coords")):
         points = build_points(SAMPLE_ROWS, {})
     assert points[0].lat is None
     assert points[0].data_quality == "no-coords"
 
 
 def test_build_points_classifies_multiple_types_from_one_row():
-    with patch("new_taipei.geocode_with_fallback", return_value=(25.01, 121.46)):
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")):
         points = build_points(SAMPLE_ROWS, {})
     assert set(points[0].violation_types) == {"illegal_parking", "red_light", "yield_pedestrian", "restricted_lane"}
     assert points[1].violation_types == ["cross_double_line"]
@@ -769,7 +800,7 @@ def test_fetch_merges_five_sub_tables():
     with patch("new_taipei.fetch_html_table_rows", return_value=SAMPLE_ROWS[:1]) as mock_fetch, \
          patch("new_taipei.load_cache", return_value={}), \
          patch("new_taipei.save_cache"), \
-         patch("new_taipei.geocode_with_fallback", return_value=(25.01, 121.46)):
+         patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")):
         from new_taipei import fetch
 
         result = fetch()
@@ -787,7 +818,7 @@ Expected: 全部 FAIL 或 ERROR
 把 `scrapers/new_taipei.py` 裡 `from geocode import geocode, load_cache, save_cache` 這行（第 10 行）換成：
 
 ```python
-from geocode import extract_primary_road, geocode, geocode_with_fallback, load_cache, save_cache
+from geocode import extract_primary_road, load_cache, resolve_with_centroid_fallback, save_cache
 ```
 
 把 `build_points` 函式裡（第 19-57 行）查詢/座標判斷這段：
@@ -813,12 +844,8 @@ from geocode import extract_primary_road, geocode, geocode_with_fallback, load_c
 ```python
         full_query = f"新北市{location}"
         primary_query = f"新北市{extract_primary_road(location)}"
-        coords = geocode_with_fallback([full_query, primary_query], cache)
-        if coords:
-            quality = "geocoded"
-        else:
-            coords = geocode("新北市", cache)
-            quality = "district-centroid" if coords else "no-coords"
+        centroid_query = "新北市"
+        coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
         lat, lng = (coords[0], coords[1]) if coords else (None, None)
 ```
 
@@ -940,7 +967,7 @@ Expected: 高雄市政府警察局固定式違規照相科技執法設備設置�
 見 `docs/superpowers/specs/2026-08-09-geocoding-fix-design.md` 與
 `docs/superpowers/plans/2026-08-09-geocoding-fix.md`。查詢字串三級回退
 + 快取schema分離暫時性錯誤與確定查無結果 + 修復高雄重複行政區名bug。
-座標覆蓋率驗證結果：[Step 6 的實際數字]。
+座標覆蓋率驗證結果：把 Step 6 實際跑出來的數字貼在這裡，不要留空。
 
 C2（地圖2168點無過濾渲染）跟 I1-I5、9個Minor、Task 14 Step 6 仍未處理。
 ```
@@ -953,4 +980,6 @@ Run: `git add .superpowers/sdd/2026-08-07-phase2a-real-enforcement-data/progress
 
 - **Spec 覆蓋**：第 3.1 節（快取 schema）→ Task 1；第 3.2 節（三級回退 + extract_primary_road）→ Task 2-5；第 3.3 節（App 型別）→ Task 6；第 4 節（測試計畫）→ 每個 Task 內含 + Task 7 驗收；第 5 節範圍邊界 → Global Constraints 已列出不做的項目。
 - **Placeholder 掃描**：無 TBD/TODO，每個程式碼步驟都是可直接執行的完整內容。
-- **型別一致性**：`geocode_with_fallback(queries: list[str], cache: dict) -> tuple[float, float] | None` 與 `extract_primary_road(text: str) -> str` 的簽章在 Task 2 定義後，Task 3/4/5 全部一致引用，沒有改名或參數順序不一致的狀況。
+- **型別一致性**：`geocode_with_fallback(queries: list[str], cache: dict) -> tuple[float, float] | None`、`extract_primary_road(text: str) -> str`、`resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache) -> tuple[tuple[float, float] | None, str]` 的簽章在 Task 2 定義後，Task 3/4/5 全部一致引用，沒有改名或參數順序不一致的狀況。
+- **DRY 修正**：原本 Task 3/4/5 會各自重複實作「試 fallback → 查中心點 → 組 quality」同一段 if/else，執行前重新檢視時發現這會被 code review 判定為重複邏輯，已收斂成 Task 2 的 `resolve_with_centroid_fallback()` 共用函式，三個 scraper 現在只負責組查詢字串。
+- **邊界情況修正**：高雄行政區重複判斷原本用 `location.startswith(district) or location.startswith(f"{district}區")`，後者的裸 `startswith(district)` 條件在路名剛好跟行政區同名開頭時（例如「楠梓路」對上「楠梓區」）會誤判成重複而漏加前綴，已收斂成只用 `location.startswith(f"{district}區")` 這個精確條件（同步修正了設計文件）。
