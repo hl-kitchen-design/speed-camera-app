@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from geocode import geocode, load_cache, save_cache
+from geocode import extract_primary_road, load_cache, resolve_with_centroid_fallback, save_cache
 from html_table_parser import fetch_html_table_rows
 from schema import EnforcementPoint, classify_types, make_id
 
@@ -24,19 +24,11 @@ def build_points(rows: list[dict[str, str]], cache: dict) -> list[EnforcementPoi
         if not location:
             continue
 
-        query = f"新北市{location}"
-        # 呼叫端先查一次快取，理由跟高雄市/台南市 scraper 一樣（Task 6 review 時發現的
-        # 系統性問題）：測試 patch("new_taipei.geocode") 會整個換掉函式，繞過它內部的
-        # 快取檢查，所以「快取已有答案時不該呼叫 geocode()」這件事要靠呼叫端自己判斷。
-        if query in cache:
-            cached = cache[query]
-            coords = (cached[0], cached[1]) if cached else None
-        else:
-            coords = geocode(query, cache)
-        if coords:
-            lat, lng, quality = coords[0], coords[1], "geocoded"
-        else:
-            lat, lng, quality = None, None, "no-coords"
+        full_query = f"新北市{location}"
+        primary_query = f"新北市{extract_primary_road(location)}"
+        centroid_query = "新北市"
+        coords, quality = resolve_with_centroid_fallback(full_query, primary_query, centroid_query, cache)
+        lat, lng = (coords[0], coords[1]) if coords else (None, None)
 
         raw_types = row.get("取締項目", "")
         points.append(

@@ -12,31 +12,43 @@ SAMPLE_ROWS = [
 ]
 
 
-def test_build_points_geocodes_with_new_taipei_prefix():
-    cache = {
-        "新北市板橋區文化路與民生路口": [25.01, 121.46],
-        "新北市省道台2線85.8K(往南)": None,
-    }
-    with patch("new_taipei.geocode") as mock_geocode:
-        points = build_points(SAMPLE_ROWS, cache)
-    mock_geocode.assert_not_called()
+def test_build_points_builds_three_level_queries_correctly():
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")) as mock_resolve:
+        points = build_points(SAMPLE_ROWS, {})
+    full_query, primary_query, centroid_query, cache = mock_resolve.call_args_list[0][0]
+    assert full_query == "新北市板橋區文化路與民生路口"
+    assert primary_query == "新北市板橋區文化路"
+    assert centroid_query == "新北市"
     assert points[0].lat == 25.01
     assert points[0].data_quality == "geocoded"
-    assert points[1].lat is None
-    assert points[1].data_quality == "no-coords"
+
+
+def test_build_points_passes_through_district_centroid_quality():
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.0, 121.5), "district-centroid")):
+        points = build_points(SAMPLE_ROWS, {})
+    assert points[0].lat == 25.0
+    assert points[0].data_quality == "district-centroid"
+
+
+def test_build_points_no_coords_when_resolve_fails():
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=(None, "no-coords")):
+        points = build_points(SAMPLE_ROWS, {})
+    assert points[0].lat is None
+    assert points[0].data_quality == "no-coords"
 
 
 def test_build_points_classifies_multiple_types_from_one_row():
-    cache = {"新北市板橋區文化路與民生路口": [25.01, 121.46], "新北市省道台2線85.8K(往南)": None}
-    points = build_points(SAMPLE_ROWS, cache)
+    with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")):
+        points = build_points(SAMPLE_ROWS, {})
     assert set(points[0].violation_types) == {"illegal_parking", "red_light", "yield_pedestrian", "restricted_lane"}
     assert points[1].violation_types == ["cross_double_line"]
 
 
 def test_fetch_merges_five_sub_tables():
     with patch("new_taipei.fetch_html_table_rows", return_value=SAMPLE_ROWS[:1]) as mock_fetch, \
-         patch("new_taipei.load_cache", return_value={"新北市板橋區文化路與民生路口": [25.01, 121.46]}), \
-         patch("new_taipei.save_cache"):
+         patch("new_taipei.load_cache", return_value={}), \
+         patch("new_taipei.save_cache"), \
+         patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")):
         from new_taipei import fetch
 
         result = fetch()
