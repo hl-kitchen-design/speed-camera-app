@@ -767,7 +767,9 @@ SAMPLE_ROWS = [
 def test_build_points_builds_three_level_queries_correctly():
     with patch("new_taipei.resolve_with_centroid_fallback", return_value=((25.01, 121.46), "geocoded")) as mock_resolve:
         points = build_points(SAMPLE_ROWS, {})
-    full_query, primary_query, centroid_query, cache = mock_resolve.call_args[0]
+    # SAMPLE_ROWS 有兩筆，resolve_with_centroid_fallback 會被呼叫兩次；
+    # call_args 只會拿到「最後一次」呼叫，要驗證第一筆必須用 call_args_list[0]
+    full_query, primary_query, centroid_query, cache = mock_resolve.call_args_list[0][0]
     assert full_query == "新北市板橋區文化路與民生路口"
     assert primary_query == "新北市板橋區文化路"
     assert centroid_query == "新北市"
@@ -984,3 +986,4 @@ Run: `git add .superpowers/sdd/2026-08-07-phase2a-real-enforcement-data/progress
 - **DRY 修正**：原本 Task 3/4/5 會各自重複實作「試 fallback → 查中心點 → 組 quality」同一段 if/else，執行前重新檢視時發現這會被 code review 判定為重複邏輯，已收斂成 Task 2 的 `resolve_with_centroid_fallback()` 共用函式，三個 scraper 現在只負責組查詢字串。
 - **邊界情況修正**：高雄行政區重複判斷原本用 `location.startswith(district) or location.startswith(f"{district}區")`，後者的裸 `startswith(district)` 條件在路名剛好跟行政區同名開頭時（例如「楠梓路」對上「楠梓區」）會誤判成重複而漏加前綴，已收斂成只用 `location.startswith(f"{district}區")` 這個精確條件（同步修正了設計文件）。
 - **執行期間發現並修正**：Task 3 執行後 task reviewer 抓到 `primary_query` 這行原本寫成 `f"高雄市{district}區{extract_primary_road(location)}"`，對 `extract_primary_road` 傳回值仍帶行政區前綴的情況（189/264 筆受影響的同一批資料）會重新複製一次重複 bug。已改成 `_build_full_query(district, extract_primary_road(location))`，重用同一份已驗證正確的去重邏輯，本檔案上面的 Task 3 Step 3 程式碼已同步更新為修正後版本。
+- **執行期間發現並修正（Task 5）**：`test_build_points_builds_three_level_queries_correctly` 原本用 `mock_resolve.call_args[0]` 取查詢字串，但 `SAMPLE_ROWS` 有兩筆資料、`resolve_with_centroid_fallback` 會被呼叫兩次，`call_args` 只反映「最後一次」呼叫，實際上驗證到的會是第二筆而非預期的第一筆。Task 5 implementer 執行時自己抓到並改成 `call_args_list[0][0]`，reviewer 確認修法正確，本檔案已同步更新。
