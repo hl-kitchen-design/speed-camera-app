@@ -110,3 +110,77 @@ def test_load_and_save_cache_roundtrip(tmp_path):
         geocode_module.save_cache({"a": [1.0, 2.0]})
         loaded = geocode_module.load_cache()
     assert loaded == {"a": [1.0, 2.0]}
+
+
+def test_geocode_with_fallback_stops_at_first_success():
+    with patch("geocode.geocode", side_effect=[None, (25.0, 121.0)]) as mock_geocode:
+        result = geocode_module.geocode_with_fallback(["查詢一", "查詢二"], {})
+    assert result == (25.0, 121.0)
+    assert mock_geocode.call_count == 2
+
+
+def test_geocode_with_fallback_returns_first_query_result_without_trying_rest():
+    with patch("geocode.geocode", side_effect=[(23.0, 120.0), (99.0, 99.0)]) as mock_geocode:
+        result = geocode_module.geocode_with_fallback(["查詢一", "查詢二"], {})
+    assert result == (23.0, 120.0)
+    mock_geocode.assert_called_once()
+
+
+def test_geocode_with_fallback_all_fail_returns_none():
+    with patch("geocode.geocode", side_effect=[None, None]) as mock_geocode:
+        result = geocode_module.geocode_with_fallback(["查詢一", "查詢二"], {})
+    assert result is None
+    assert mock_geocode.call_count == 2
+
+
+def test_extract_primary_road_removes_parenthetical():
+    assert geocode_module.extract_primary_road("九如三路(中都街與九如大橋中段)") == "九如三路"
+
+
+def test_extract_primary_road_splits_on_intersection_marker():
+    assert geocode_module.extract_primary_road("民族一路與十全一路口") == "民族一路"
+
+
+def test_extract_primary_road_splits_on_dun_symbol():
+    assert geocode_module.extract_primary_road("大學路、學成路口") == "大學路"
+
+
+def test_extract_primary_road_strips_trailing_junction_suffix_without_split():
+    assert geocode_module.extract_primary_road("大昌二路420巷口") == "大昌二路420"
+
+
+def test_extract_primary_road_returns_unchanged_when_no_markers():
+    assert geocode_module.extract_primary_road("同盟一路高醫大門") == "同盟一路高醫大門"
+
+
+def test_resolve_with_centroid_fallback_returns_geocoded_when_first_level_succeeds():
+    with patch("geocode.geocode_with_fallback", return_value=(23.0, 120.0)) as mock_fallback, \
+         patch("geocode.geocode") as mock_geocode:
+        coords, quality = geocode_module.resolve_with_centroid_fallback(
+            "完整字串", "主要道路", "中心點", {}
+        )
+    mock_fallback.assert_called_once_with(["完整字串", "主要道路"], {})
+    mock_geocode.assert_not_called()
+    assert coords == (23.0, 120.0)
+    assert quality == "geocoded"
+
+
+def test_resolve_with_centroid_fallback_returns_district_centroid_when_only_centroid_succeeds():
+    with patch("geocode.geocode_with_fallback", return_value=None), \
+         patch("geocode.geocode", return_value=(23.0, 120.0)) as mock_geocode:
+        coords, quality = geocode_module.resolve_with_centroid_fallback(
+            "完整字串", "主要道路", "中心點", {}
+        )
+    mock_geocode.assert_called_once_with("中心點", {})
+    assert coords == (23.0, 120.0)
+    assert quality == "district-centroid"
+
+
+def test_resolve_with_centroid_fallback_returns_no_coords_when_everything_fails():
+    with patch("geocode.geocode_with_fallback", return_value=None), \
+         patch("geocode.geocode", return_value=None):
+        coords, quality = geocode_module.resolve_with_centroid_fallback(
+            "完整字串", "主要道路", "中心點", {}
+        )
+    assert coords is None
+    assert quality == "no-coords"

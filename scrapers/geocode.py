@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -67,3 +68,44 @@ def geocode(query: str, cache: dict) -> tuple[float, float] | None:
     else:
         cache[query] = {"lat": None, "lng": None, "checked_at": datetime.now(timezone.utc).isoformat()}
     return lat_lng
+
+
+def geocode_with_fallback(queries: list[str], cache: dict) -> tuple[float, float] | None:
+    """依序嘗試查詢字串清單，任一個成功就停止並回傳該筆座標；全部失敗回傳 None。
+    快取判斷（含冷卻重試）完全交給 geocode() 處理，這裡不重複快取邏輯。"""
+    for query in queries:
+        coords = geocode(query, cache)
+        if coords:
+            return coords
+    return None
+
+
+_PAREN_RE = re.compile(r"\([^)]*\)")
+_INTERSECTION_SPLIT_RE = re.compile(r"[與、]")
+_TRAILING_JUNCTION_RE = re.compile(r"(路口|巷口)$")
+
+
+def extract_primary_road(text: str) -> str:
+    """從路口交叉描述擷取第一條路的名稱，作為地理編碼查詢降級用（完整路口字串查不到時，
+    改查單一道路名，Nominatim 對單一道路名的比對成功率遠高於台灣路口交叉寫法）。
+    不保證處理每一種寫法（例如帶巷弄門牌號的「420巷口」精簡後可能仍不夠準確）——
+    這只是三級回退的第二級，查不到會自然落到第三級（縣市/行政區中心點），不是最終保底。"""
+    without_paren = _PAREN_RE.sub("", text)
+    primary = _INTERSECTION_SPLIT_RE.split(without_paren)[0]
+    primary = _TRAILING_JUNCTION_RE.sub("", primary)
+    return primary.strip()
+
+
+def resolve_with_centroid_fallback(
+    full_query: str, primary_query: str, centroid_query: str, cache: dict
+) -> tuple[tuple[float, float] | None, str]:
+    """三級查詢回退的共用進入點：完整字串→主要道路名→縣市/行政區中心點，
+    回傳 (座標或None, data_quality)。kaohsiung.py/tainan.py/new_taipei.py 三個
+    scraper 共用同一份邏輯，各自只需要組出三段查詢字串。"""
+    coords = geocode_with_fallback([full_query, primary_query], cache)
+    if coords:
+        return coords, "geocoded"
+    coords = geocode(centroid_query, cache)
+    if coords:
+        return coords, "district-centroid"
+    return None, "no-coords"
